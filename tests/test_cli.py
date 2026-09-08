@@ -44,6 +44,37 @@ def test_estimate_unknown_model_exits_3(capsys, pricing_file):
     assert "does-not-exist" in err
 
 
+def test_estimate_batch_multiplies_by_calls(capsys, pricing_file):
+    code = main(
+        ["--pricing", pricing_file, "estimate", "--model", "cheap", "--input", "1000000", "--calls", "3"]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "3 calls" in out
+    assert "cost per call: $1.0000" in out
+
+
+def test_estimate_cached_and_cache_write_flags(capsys, pricing_file):
+    code = main(
+        [
+            "--pricing",
+            pricing_file,
+            "--json",
+            "estimate",
+            "--model",
+            "cheap",
+            "--cached",
+            "1000000",
+            "--cache-write",
+            "1000000",
+        ]
+    )
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert data["cached_input_cost"] == 1.0
+    assert data["cache_write_cost"] == 1.0
+
+
 def test_report_prints_table_and_totals(capsys, pricing_file, tmp_path):
     usage_file = tmp_path / "usage.jsonl"
     usage_file.write_text(
@@ -56,6 +87,35 @@ def test_report_prints_table_and_totals(capsys, pricing_file, tmp_path):
     assert code == 0
     assert "TOTAL" in out
     assert "pricey" in out and "cheap" in out
+
+
+def test_report_group_by_arbitrary_field(capsys, pricing_file, tmp_path):
+    usage_file = tmp_path / "usage.jsonl"
+    usage_file.write_text(
+        '{"model": "cheap", "team": "a", "usage": {"input_tokens": 1000000, "output_tokens": 0}}\n'
+        '{"model": "pricey", "team": "b", "usage": {"input_tokens": 1000000, "output_tokens": 0}}\n',
+        encoding="utf-8",
+    )
+    code = main(["--pricing", pricing_file, "report", "--group-by", "team", str(usage_file)])
+    out = capsys.readouterr().out
+    assert code == 0
+    lines = out.splitlines()
+    assert lines[0].split()[0] == "team"
+    keys = [line.split()[0] for line in lines[2:]]
+    assert set(keys) == {"a", "b", "TOTAL"}
+
+
+def test_report_prints_skipped_unpriced_models(capsys, pricing_file, tmp_path):
+    usage_file = tmp_path / "usage.jsonl"
+    usage_file.write_text(
+        '{"model": "cheap", "usage": {"input_tokens": 1000000, "output_tokens": 0}}\n'
+        '{"model": "unpriced-model", "usage": {"input_tokens": 1000000, "output_tokens": 0}}\n',
+        encoding="utf-8",
+    )
+    code = main(["--pricing", pricing_file, "report", str(usage_file)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "skipped 1 record(s) with no price: unpriced-model" in out
 
 
 def test_report_json_includes_problems(capsys, pricing_file, tmp_path):
@@ -98,6 +158,15 @@ def test_compare_ranks_cheapest_first(capsys, pricing_file):
     assert lines.index([line for line in lines if line.startswith("cheap")][0]) < lines.index(
         [line for line in lines if line.startswith("pricey")][0]
     )
+
+
+def test_compare_models_flag_narrows_shortlist(capsys, pricing_file):
+    code = main(["--pricing", pricing_file, "compare", "--input", "1", "--output", "1", "--models", "pricey"])
+    out = capsys.readouterr().out
+    assert code == 0
+    data_lines = [line for line in out.strip().splitlines() if line.startswith("pricey") or line.startswith("cheap")]
+    assert len(data_lines) == 1
+    assert data_lines[0].split() == ["pricey", "acme", "10.00", "10.00", "$0.0000", "1.0x"]
 
 
 def test_compare_json_output(capsys, pricing_file):
